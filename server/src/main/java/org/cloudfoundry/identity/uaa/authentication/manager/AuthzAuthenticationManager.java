@@ -12,17 +12,20 @@
  *******************************************************************************/
 package org.cloudfoundry.identity.uaa.authentication.manager;
 
+import java.util.Calendar;
+import java.util.Collections;
+import java.util.Date;
+import java.util.Locale;
+
 import org.cloudfoundry.identity.uaa.authentication.AccountNotVerifiedException;
 import org.cloudfoundry.identity.uaa.authentication.AuthenticationPolicyRejectionException;
-import org.cloudfoundry.identity.uaa.authentication.MfaAuthenticationRequiredException;
-import org.cloudfoundry.identity.uaa.authentication.PasswordChangeRequiredException;
-import org.cloudfoundry.identity.uaa.authentication.PasswordExpiredException;
 import org.cloudfoundry.identity.uaa.authentication.UaaAuthentication;
 import org.cloudfoundry.identity.uaa.authentication.UaaAuthenticationDetails;
 import org.cloudfoundry.identity.uaa.authentication.UaaPrincipal;
+import org.cloudfoundry.identity.uaa.authentication.event.IdentityProviderAuthenticationSuccessEvent;
+import org.cloudfoundry.identity.uaa.authentication.event.PasswordAuthenticationFailureEvent;
 import org.cloudfoundry.identity.uaa.authentication.event.UnverifiedUserAuthenticationEvent;
 import org.cloudfoundry.identity.uaa.authentication.event.UserAuthenticationFailureEvent;
-import org.cloudfoundry.identity.uaa.authentication.event.UserAuthenticationSuccessEvent;
 import org.cloudfoundry.identity.uaa.authentication.event.UserNotFoundEvent;
 import org.cloudfoundry.identity.uaa.constants.OriginKeys;
 import org.cloudfoundry.identity.uaa.logging.SanitizedLogFactory;
@@ -33,6 +36,7 @@ import org.cloudfoundry.identity.uaa.user.UaaUser;
 import org.cloudfoundry.identity.uaa.user.UaaUserDatabase;
 import org.cloudfoundry.identity.uaa.util.ObjectUtils;
 import org.cloudfoundry.identity.uaa.zone.IdentityZoneHolder;
+
 import org.springframework.context.ApplicationEvent;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.ApplicationEventPublisherAware;
@@ -44,11 +48,6 @@ import org.springframework.security.core.Authentication;
 import org.springframework.security.core.AuthenticationException;
 import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.security.crypto.password.PasswordEncoder;
-
-import java.util.Calendar;
-import java.util.Collections;
-import java.util.Date;
-import java.util.Locale;
 
 public class AuthzAuthenticationManager implements AuthenticationManager, ApplicationEventPublisherAware {
 
@@ -96,6 +95,7 @@ public class AuthzAuthenticationManager implements AuthenticationManager, Applic
 
             if (!passwordMatches) {
                 logger.debug("Password did not match for user " + req.getName());
+                publish(new PasswordAuthenticationFailureEvent(user, req));
                 publish(new UserAuthenticationFailureEvent(user, req));
             } else {
                 logger.debug("Password successfully matched for userId["+user.getUsername()+"]:"+user.getId());
@@ -106,34 +106,30 @@ public class AuthzAuthenticationManager implements AuthenticationManager, Applic
                     throw new AccountNotVerifiedException("Account not verified");
                 }
 
-
-                checkPasswordExpired(user.getPasswordLastModified());
-
                 UaaAuthentication success = new UaaAuthentication(
                         new UaaPrincipal(user),
                         user.getAuthorities(),
                         (UaaAuthenticationDetails) req.getDetails());
+
+                if (checkPasswordExpired(user.getPasswordLastModified())) {
+                    user.setPasswordChangeRequired(true);
+                }
 
                 success.setAuthenticationMethods(Collections.singleton("pwd"));
                 Date passwordNewerThan = getPasswordNewerThan();
                 if(passwordNewerThan != null) {
                     if(user.getPasswordLastModified() == null || (passwordNewerThan.getTime() > user.getPasswordLastModified().getTime())) {
                         logger.info("Password change required for user: "+user.getEmail());
-                        throw new PasswordChangeRequiredException(success, "User password needs to be changed");
+                        success.setRequiresPasswordChange(true);
                     }
                 }
 
                 if(user.isPasswordChangeRequired()){
                     logger.info("Password change required for user: "+user.getEmail());
-                    throw new PasswordChangeRequiredException(success, "User password needs to be changed");
+                    success.setRequiresPasswordChange(true);
                 }
 
-                if(IdentityZoneHolder.get().getConfig().getMfaConfig().isEnabled()) {
-                    throw new MfaAuthenticationRequiredException(success, "Mfa authentication required");
-                }
-
-                publish(new UserAuthenticationSuccessEvent(user, success));
-
+                publish(new IdentityProviderAuthenticationSuccessEvent(user, success));
                 return success;
             }
         }
@@ -211,15 +207,16 @@ public class AuthzAuthenticationManager implements AuthenticationManager, Applic
         this.allowUnverifiedUsers = allowUnverifiedUsers;
     }
 
-    private void checkPasswordExpired(Date passwordLastModified) {
+    private boolean checkPasswordExpired(Date passwordLastModified) {
         int expiringPassword = getPasswordExpiresInMonths();
         if (expiringPassword>0) {
             Calendar cal = Calendar.getInstance();
             cal.setTimeInMillis(passwordLastModified.getTime());
             cal.add(Calendar.MONTH, expiringPassword);
             if (cal.getTimeInMillis() < System.currentTimeMillis()) {
-                throw new PasswordExpiredException("Your current password has expired. Please reset your password.");
+                return true;
             }
         }
+        return false;
     }
 }

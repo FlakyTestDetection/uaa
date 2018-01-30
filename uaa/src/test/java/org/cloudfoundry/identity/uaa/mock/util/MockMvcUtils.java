@@ -14,9 +14,24 @@
 
 package org.cloudfoundry.identity.uaa.mock.util;
 
-import com.fasterxml.jackson.core.type.TypeReference;
-import org.apache.commons.codec.binary.Base64;
-import org.apache.commons.lang.RandomStringUtils;
+import javax.servlet.http.Cookie;
+import javax.servlet.http.HttpServletResponse;
+import javax.servlet.http.HttpSession;
+import java.io.File;
+import java.net.URL;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+import org.cloudfoundry.identity.uaa.audit.event.AbstractUaaEvent;
 import org.cloudfoundry.identity.uaa.authentication.UaaAuthentication;
 import org.cloudfoundry.identity.uaa.authentication.UaaAuthenticationDetails;
 import org.cloudfoundry.identity.uaa.authentication.UaaPrincipal;
@@ -26,6 +41,7 @@ import org.cloudfoundry.identity.uaa.invitations.InvitationsResponse;
 import org.cloudfoundry.identity.uaa.login.Prompt;
 import org.cloudfoundry.identity.uaa.mfa.GoogleMfaProviderConfig;
 import org.cloudfoundry.identity.uaa.mfa.MfaProvider;
+import org.cloudfoundry.identity.uaa.mfa.UserGoogleMfaCredentials;
 import org.cloudfoundry.identity.uaa.mock.InjectedMockContextTest;
 import org.cloudfoundry.identity.uaa.oauth.client.ClientDetailsModification;
 import org.cloudfoundry.identity.uaa.oauth.token.TokenConstants;
@@ -58,7 +74,14 @@ import org.cloudfoundry.identity.uaa.zone.IdentityZoneSwitchingFilter;
 import org.cloudfoundry.identity.uaa.zone.Links;
 import org.cloudfoundry.identity.uaa.zone.MultitenancyFixture;
 import org.cloudfoundry.identity.uaa.zone.MultitenantJdbcClientDetailsService;
+
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.warrenstrange.googleauth.GoogleAuthenticator;
+import com.warrenstrange.googleauth.GoogleAuthenticatorConfig;
+import org.apache.commons.codec.binary.Base64;
+import org.apache.commons.lang.RandomStringUtils;
 import org.junit.Assert;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.ApplicationEvent;
@@ -71,7 +94,6 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.mock.web.MockHttpSession;
-import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.authority.AuthorityUtils;
 import org.springframework.security.core.context.SecurityContext;
@@ -89,32 +111,21 @@ import org.springframework.security.web.savedrequest.DefaultSavedRequest;
 import org.springframework.security.web.savedrequest.SavedRequest;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
+import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.test.web.servlet.ResultMatcher;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 import org.springframework.test.web.servlet.request.RequestPostProcessor;
 import org.springframework.util.StringUtils;
 import org.springframework.web.util.UriComponentsBuilder;
 
-import javax.servlet.http.Cookie;
-import javax.servlet.http.HttpServletResponse;
-import java.io.File;
-import java.net.URL;
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.LinkedList;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
-
 import static java.util.Arrays.asList;
+import static org.cloudfoundry.identity.uaa.mock.util.MockMvcUtils.CookieCsrfPostProcessor.cookieCsrf;
 import static org.cloudfoundry.identity.uaa.scim.ScimGroupMember.Type.USER;
 import static org.cloudfoundry.identity.uaa.web.UaaSavedRequestAwareAuthenticationSuccessHandler.SAVED_REQUEST_SESSION_ATTRIBUTE;
+import static org.hamcrest.Matchers.containsInAnyOrder;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertThat;
+import static org.junit.Assert.assertTrue;
 import static org.springframework.http.HttpHeaders.HOST;
 import static org.springframework.http.MediaType.APPLICATION_JSON;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
@@ -122,7 +133,9 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultHandlers.print;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.redirectedUrl;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.view;
 import static org.springframework.util.StringUtils.hasText;
 import static org.springframework.util.StringUtils.isEmpty;
 
@@ -162,6 +175,123 @@ public final class MockMvcUtils {
         "    <md:EmailAddress>fhanik@pivotal.io</md:EmailAddress>\n" +
         "  </md:ContactPerson>\n" +
         "</md:EntityDescriptor>";
+
+
+    public static <T> T getEventOfType(ArgumentCaptor<AbstractUaaEvent> captor, Class<T> type) {
+        for (AbstractUaaEvent event : captor.getAllValues()) {
+            if (event.getClass().equals(type)) {
+                return (T)event;
+            }
+        }
+        return null;
+    }
+
+    public static String performMfaPostVerifyWithCode(int code, MockMvc mvc, MockHttpSession session) throws Exception {
+        return performMfaPostVerifyWithCode(code, mvc, session, "localhost");
+    }
+
+    public static String performMfaPostVerifyWithCode(int code, MockMvc mvc, MockHttpSession session, String host) throws Exception {
+        return mvc.perform(post("/login/mfa/verify.do")
+            .param("code", Integer.toString(code))
+            .header("Host", host)
+            .session(session)
+            .with(cookieCsrf()))
+            .andExpect(status().is3xxRedirection())
+            .andExpect(redirectedUrl("/login/mfa/completed"))
+            .andReturn().getResponse().getRedirectedUrl();
+    }
+
+    public static int getMFACodeFromSession(MockHttpSession session) {
+        UserGoogleMfaCredentials activeCreds = (UserGoogleMfaCredentials) session.getAttribute("SESSION_USER_GOOGLE_MFA_CREDENTIALS");
+        GoogleAuthenticator authenticator = new GoogleAuthenticator(new GoogleAuthenticatorConfig.GoogleAuthenticatorConfigBuilder().build());
+        return authenticator.getTotpPassword(activeCreds.getSecretKey());
+    }
+
+    public static UaaAuthentication getUaaAuthentication(HttpSession session) {
+        SecurityContext context = (SecurityContext) session.getAttribute(HttpSessionSecurityContextRepository.SPRING_SECURITY_CONTEXT_KEY);
+        return (UaaAuthentication) context.getAuthentication();
+    }
+
+    public static ResultActions performMfaRegistrationInZone(String username, String password, MockMvc mockMvc, String host, String[] firstAuthMethods, String[] afterMfaAuthMethods) throws Exception {
+
+        //ldap login
+        MockHttpSession session = (MockHttpSession) mockMvc.perform(
+            post("/login.do")
+                .with(cookieCsrf())
+                .header(HOST, host)
+                .accept(MediaType.TEXT_HTML)
+                .param("username", username)
+                .param("password", password)
+        )
+            .andExpect(status().isFound())
+            .andExpect(redirectedUrl("/"))
+            .andReturn().getRequest().getSession(false);
+
+        assertTrue(getUaaAuthentication(session).isAuthenticated());
+        assertThat(getUaaAuthentication(session).getAuthenticationMethods(), containsInAnyOrder(firstAuthMethods));
+
+        //successful login, follow redirect
+        mockMvc.perform(
+            get("/")
+                .header(HOST, host)
+                .accept(MediaType.TEXT_HTML)
+                .session(session)
+        )
+            .andExpect(status().isFound())
+            .andExpect(redirectedUrl("/login/mfa/register"));
+
+        //follow redirect to mfa register
+        mockMvc.perform(
+            get("/login/mfa/register")
+                .header(HOST, host)
+                .accept(MediaType.TEXT_HTML)
+                .session(session)
+        )
+            .andExpect(status().isOk())
+            .andExpect(view().name("mfa/qr_code"));
+
+        //post MFA code
+        int code = MockMvcUtils.getMFACodeFromSession(session);
+        String location = MockMvcUtils.performMfaPostVerifyWithCode(code, mockMvc, session, host);
+        //follow redirect to completed
+        location = mockMvc.perform(get(location)
+            .session(session)
+            .header(HOST, host)
+        )
+            .andExpect(status().isFound())
+            .andExpect(redirectedUrl("http://"+ host +"/"))
+            .andReturn().getResponse().getRedirectedUrl();
+
+        ResultActions resultActions = mockMvc.perform(get(location)
+            .session(session)
+            .header(HOST, host)
+        );
+
+        assertTrue(getUaaAuthentication(session).isAuthenticated());
+        assertThat(getUaaAuthentication(session).getAuthenticationMethods(), containsInAnyOrder(afterMfaAuthMethods));
+
+        return resultActions;
+    }
+
+    public static MfaProvider createMfaProvider(MockMvc mockMvc, String zoneId, String adminToken) throws Exception {
+        MfaProvider provider = new MfaProvider();
+        provider.setName(new RandomValueStringGenerator(5).generate());
+        provider.setType(MfaProvider.MfaProviderType.GOOGLE_AUTHENTICATOR);
+        provider.setIdentityZoneId(zoneId);
+        provider.setConfig(new GoogleMfaProviderConfig());
+        MockHttpServletRequestBuilder post = post("/mfa-providers")
+            .header("Authorization", "Bearer " + adminToken)
+            .contentType(APPLICATION_JSON)
+            .content(JsonUtils.writeValueAsString(provider));
+        if (!IdentityZone.getUaa().getId().equalsIgnoreCase(zoneId)) {
+            post.header(IdentityZoneSwitchingFilter.HEADER, zoneId);
+        }
+        return JsonUtils.readValue(mockMvc.perform(post)
+            .andExpect(status().isCreated())
+            .andReturn()
+            .getResponse().getContentAsByteArray(), MfaProvider.class);
+    }
+
 
     public static MockMvcUtils utils() {
         // this is all static now
@@ -977,8 +1107,7 @@ public final class MockMvcUtils {
                         .getBytes()));
         UaaPrincipal p = new UaaPrincipal(userId, username, "test@test.org", OriginKeys.UAA, "", IdentityZoneHolder.get()
                 .getId());
-        UsernamePasswordAuthenticationToken auth = new UsernamePasswordAuthenticationToken(p, "",
-                UaaAuthority.USER_AUTHORITIES);
+        UaaAuthentication auth = new UaaAuthentication(p, UaaAuthority.USER_AUTHORITIES, null);
         Assert.assertTrue(auth.isAuthenticated());
 
         SecurityContextHolder.getContext().setAuthentication(auth);
@@ -1003,7 +1132,7 @@ public final class MockMvcUtils {
             authRequest.param(OAuth2Utils.SCOPE, scope);
         }
 
-        MvcResult result = mockMvc.perform(authRequest).andExpect(status().is3xxRedirection()).andReturn();
+        MvcResult result = mockMvc.perform(authRequest).andDo(print()).andExpect(status().is3xxRedirection()).andReturn();
         String location = result.getResponse().getHeader("Location");
         UriComponentsBuilder builder = UriComponentsBuilder.fromHttpUrl(location);
         String code = builder.build().getQueryParams().get("code").get(0);
@@ -1239,6 +1368,6 @@ public final class MockMvcUtils {
     }
 
     public static GoogleMfaProviderConfig constructGoogleProviderConfiguration() {
-        return new GoogleMfaProviderConfig().setAlgorithm(GoogleMfaProviderConfig.Algorithm.SHA256);
+        return new GoogleMfaProviderConfig();
     }
 }

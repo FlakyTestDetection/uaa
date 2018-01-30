@@ -60,7 +60,6 @@ import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
-import static org.junit.Assume.assumeTrue;
 
 @RunWith(SpringJUnit4ClassRunner.class)
 @ContextConfiguration(classes = DefaultIntegrationTestConfig.class)
@@ -221,7 +220,7 @@ public class LoginIT {
 
     @Test
     public void testNoZoneFound() throws Exception {
-        assumeTrue("Expected testzone1/2/3/4/doesnotexist.localhost to resolve to 127.0.0.1", doesSupportZoneDNS());
+        assertTrue("Expected testzone1/2/3/4/doesnotexist.localhost to resolve to 127.0.0.1", doesSupportZoneDNS());
         webDriver.get(baseUrl.replace("localhost","testzonedoesnotexist.localhost") + "/login");
         assertEquals("The subdomain does not map to a valid identity zone.",webDriver.findElement(By.tagName("p")).getText());
     }
@@ -276,8 +275,8 @@ public class LoginIT {
             HttpMethod.POST,
             new HttpEntity<>(body, headers),
             String.class);
-        assertEquals(HttpStatus.FORBIDDEN, loginResponse.getStatusCode());
-        assertTrue("CSRF message should be shown", loginResponse.getBody().contains("Invalid login attempt, request does not meet our security standards, please try again."));
+        assertEquals(HttpStatus.FOUND, loginResponse.getStatusCode());
+        assertTrue("CSRF message should be shown", loginResponse.getHeaders().getFirst("Location").contains("invalid_login_request"));
     }
 
     @Test
@@ -357,12 +356,12 @@ public class LoginIT {
         String zoneUrl = createDiscoveryZone();
 
         String userEmail = createAnotherUser(zoneUrl);
-        webDriver.get(zoneUrl + "/logout");
+        webDriver.get(zoneUrl + "/logout.do");
         webDriver.manage().deleteAllCookies();
         webDriver.get(zoneUrl);
 
         loginThroughDiscovery(userEmail, USER_PASSWORD);
-        webDriver.get(zoneUrl + "/logout");
+        webDriver.get(zoneUrl + "/logout.do");
 
         webDriver.get(zoneUrl);
         assertEquals("Sign in to another account", webDriver.findElement(By.cssSelector("div.action a")).getText());
@@ -377,11 +376,11 @@ public class LoginIT {
         String zoneUrl = createDiscoveryZone();
 
         String userEmail = createAnotherUser(zoneUrl);
-        webDriver.get(zoneUrl + "/logout");
+        webDriver.get(zoneUrl + "/logout.do");
         webDriver.get(zoneUrl);
 
         loginThroughDiscovery(userEmail, USER_PASSWORD);
-        webDriver.get(zoneUrl + "/logout");
+        webDriver.get(zoneUrl + "/logout.do");
 
         webDriver.get(zoneUrl);
         assertEquals(userEmail, webDriver.findElement(By.className("email-address")).getText());

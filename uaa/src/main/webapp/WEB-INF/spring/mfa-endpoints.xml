@@ -12,18 +12,15 @@
                          ref="mfaProviderValidator"/>
     </bean>
 
-    <bean id="googleMfaProviderConfigValidator"
-          class="org.cloudfoundry.identity.uaa.mfa.GoogleMfaProviderConfigValidator"/>
-
-    <bean id="mfaProviderValidator" class="org.cloudfoundry.identity.uaa.mfa.GeneralMfaProviderValidator">
-        <property name="configValidator" ref="googleMfaProviderConfigValidator"/>
-    </bean>
+    <bean id="mfaProviderValidator" class="org.cloudfoundry.identity.uaa.mfa.GeneralMfaProviderValidator" />
 
     <bean id="mfaProviderEndpoints" class="org.cloudfoundry.identity.uaa.mfa.MfaProviderEndpoints">
         <property name="mfaProviderProvisioning" ref="mfaProviderProvisioning"/>
         <property name="mfaProviderValidator" ref="mfaProviderValidator"/>
         <property name="identityZoneProvisioning" ref="identityZoneProvisioning"/>
     </bean>
+
+    <bean id="runtimeEnvironment" class="org.cloudfoundry.identity.uaa.util.RuntimeEnvironment" />
 
     <http name="mfaProviderSecurity" pattern="/mfa-providers/**" create-session="stateless"
           entry-point-ref="oauthAuthenticationEntryPoint"

@@ -75,12 +75,12 @@ public abstract class UaaUrlUtils {
     }
 
     private static final Pattern allowedRedirectUriPattern = Pattern.compile(
-        "^http(\\*|s)?://" +            //URL starts with 'www.' or 'http://' or 'https://' or 'http*://
-        "(.*:.*@)?" +                   //username/password in URL
-        "(([a-zA-Z0-9\\-\\*]+\\.)*" +   //subdomains
-        "[a-zA-Z0-9\\-]+\\.)?" +        //hostname
-        "[a-zA-Z0-9\\-]+" +             //tld
-        "(:[0-9]+)?(/.*|$)"             //port and path
+        "^http(\\*|s)?://" +             //URL starts with 'www.' or 'http://' or 'https://' or 'http*://
+        "(.*:.*@)?" +                    //username/password in URL
+        "(([a-zA-Z0-9\\-\\*\\_]+\\.)*" + //subdomains
+        "[a-zA-Z0-9\\-\\_]+\\.)?" +      //hostname
+        "[a-zA-Z0-9\\-]+" +              //tld
+        "(:[0-9]+)?(/.*|$)"              //port and path
     );
     public static boolean isValidRegisteredRedirectUrl(String url) {
         if (hasText(url)) {
@@ -120,7 +120,7 @@ public abstract class UaaUrlUtils {
 
     public static String getBaseURL(HttpServletRequest request) {
         //returns scheme, host and context path
-        //for example http://localhost:8080/uaa or http://login.uaa-acceptance.cf-app.com
+        //for example http://localhost:8080/uaa or http://login.oms.identity.team
         String requestURL = request.getRequestURL().toString();
         return hasText(request.getServletPath()) ?
             requestURL.substring(0, requestURL.lastIndexOf(request.getServletPath())) :
